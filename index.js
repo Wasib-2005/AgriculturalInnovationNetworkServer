@@ -1,20 +1,20 @@
 import express from "express";
 import mongoose from "mongoose";
-import multer from "multer";
 import cors from "cors";
 import dotenv from "dotenv";
+import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
-import Product from "./models/Product.js";
+import ProductSchema from "./models/ProductSchema.js";
+import fs from "fs";
+import path from "path";
 
 dotenv.config();
+
 const app = express();
 
 // Middleware
 app.use(cors());
 app.use(express.json());
-
-// Multer (for file uploads)
-const upload = multer({ dest: "uploads/" });
 
 // Cloudinary Config
 cloudinary.config({
@@ -24,13 +24,41 @@ cloudinary.config({
 });
 
 // MongoDB Connection
-mongoose.connect(process.env.MONGO_URI)
+mongoose
+  .connect(process.env.MONGO_URI)
   .then(() => console.log("✅ MongoDB Connected"))
-  .catch((err) => console.error(err));
+  .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
-// Routes
-app.post("/api/products", upload.single("productImg"), async (req, res) => {
+// Ensure upload folder exists
+const uploadDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadDir)) {
+  fs.mkdirSync(uploadDir);
+}
+
+// Multer setup
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, "uploads/");
+  },
+  filename: function (req, file, cb) {
+    cb(null, Date.now() + "-" + file.originalname);
+  },
+});
+const upload = multer({ storage });
+
+app.get("/", (req, res) => {
+  res.send("API is running...");
+});
+
+app.post("/user_verification", (req, res) => {
+  res.send("API is running...");
+});
+
+// POST: Add new product
+app.post("/upload/products", upload.single("productImg"), async (req, res) => {
   try {
+    console.log("Received product data:", req.body);
+
     let imageUrl = "";
 
     if (req.file) {
@@ -38,9 +66,12 @@ app.post("/api/products", upload.single("productImg"), async (req, res) => {
         folder: "farmer_products",
       });
       imageUrl = result.secure_url;
+
+      // Remove temp file
+      fs.unlinkSync(req.file.path);
     }
 
-    const newProduct = new Product({
+    const newProduct = new ProductSchema({
       productName: req.body.productName,
       productCategory: req.body.productCategory,
       productQuantity: req.body.productQuantity,
@@ -50,6 +81,7 @@ app.post("/api/products", upload.single("productImg"), async (req, res) => {
     });
 
     await newProduct.save();
+
     res.status(201).json({ message: "Product added!", product: newProduct });
   } catch (error) {
     console.error(error);
@@ -57,16 +89,75 @@ app.post("/api/products", upload.single("productImg"), async (req, res) => {
   }
 });
 
-// Get all products
-app.get("/api/products", async (req, res) => {
+// GET: All products
+app.get("/get/products", async (req, res) => {
   try {
-    const products = await Product.find();
-    res.json(products);
+    // Query params from frontend (default: page=1, limit=10)
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    // Calculate skip
+    const skip = (page - 1) * limit;
+
+    // Fetch products with skip + limit
+    const products = await ProductSchema.find().skip(skip).limit(limit);
+
+    // Count total documents
+    const total = await ProductSchema.countDocuments();
+
+    res.json({
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      products,
+    });
   } catch (error) {
+    console.error(error);
     res.status(500).json({ message: "Failed to fetch products" });
   }
 });
 
-app.listen(process.env.PORT, () =>
-  console.log(`🚀 Server running on port ${process.env.PORT}`)
-);
+// GET Product by Name & category
+app.get("/product_search", async (req, res) => {
+  try {
+    const search = req.query.name; // can be product name or category
+    const page = parseInt(req.query.page) || 1;
+    const limit = parseInt(req.query.limit) || 10;
+
+    if (!search) {
+      return res.status(400).json({ message: "Search term is required" });
+    }
+
+    const skip = (page - 1) * limit;
+
+    // Case-insensitive search by productName OR category
+    const query = {
+      $or: [
+        { productName: { $regex: new RegExp(search, "i") } },
+        { productCategory: { $regex: new RegExp(search, "i") } },
+      ],
+    };
+
+    const products = await ProductSchema.find(query)
+      .skip(skip)
+      .limit(limit);
+
+    const total = await ProductSchema.countDocuments(query);
+
+    res.json({
+      page,
+      limit,
+      total,
+      totalPages: Math.ceil(total / limit),
+      products,
+    });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to fetch products", error });
+  }
+});
+
+
+const PORT = process.env.PORT || 5000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
