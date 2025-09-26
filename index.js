@@ -20,7 +20,7 @@ const app = express();
 // Middleware
 app.use(
   cors({
-    origin: "https://agricultural-innovation-network.onrender.com/", // adjust as needed
+    origin: "https://agricultural-innovation-network.onrender.com", // adjust as needed
     credentials: true,
   })
 );
