@@ -10,6 +10,8 @@ import path from "path";
 import ProductSchema from "./models/ProductSchema.js";
 import CommentsSchema from "./models/CommentsSchema.js";
 import UserSchema from "./models/UserSchema.js";
+import OrderSchema from "./models/OrderSchema.js";
+import Blog from "./models/BlogSchema.js";
 
 dotenv.config();
 
@@ -18,7 +20,7 @@ const app = express();
 // Middleware
 app.use(
   cors({
-    origin: "*", // adjust as needed
+    origin: "https://agricultural-innovation-network.onrender.com/", // adjust as needed
     credentials: true,
   })
 );
@@ -65,7 +67,9 @@ app.post("/user_verification", async (req, res) => {
   if (!email) return res.status(400).json({ message: "Email is required" });
 
   try {
-    const existingUser = await UserSchema.findOne({ email: email.toLowerCase() });
+    const existingUser = await UserSchema.findOne({
+      email: email.toLowerCase(),
+    });
     if (existingUser) return res.json({ exists: true, user: existingUser });
     return res.json({ exists: false });
   } catch (error) {
@@ -76,16 +80,28 @@ app.post("/user_verification", async (req, res) => {
 
 // === CREATE USER ===
 app.post("/create_user", async (req, res) => {
-  const { name, email, role } = req.body;
+  const { name, email, role, ...otherFields } = req.body;
+
   if (!name || !email || !role) {
     return res.status(400).json({ message: "Name, email, and role are required" });
   }
 
   try {
-    const existingUser = await UserSchema.findOne({ email: email.toLowerCase() });
-    if (existingUser) return res.status(409).json({ message: "User already exists", user: existingUser });
+    const existingUser = await UserSchema.findOne({
+      email: email.toLowerCase(),
+    });
 
-    const newUser = new UserSchema({ name, email: email.toLowerCase(), role });
+    if (existingUser) {
+      return res.status(409).json({ message: "User already exists", user: existingUser });
+    }
+
+    const newUser = new UserSchema({
+      name,
+      email: email.toLowerCase(),
+      role,
+      ...otherFields, // ✅ add all extra fields
+    });
+
     await newUser.save();
 
     res.status(201).json({ message: "User created successfully", user: newUser });
@@ -94,6 +110,7 @@ app.post("/create_user", async (req, res) => {
     res.status(500).json({ message: "Failed to create user", error });
   }
 });
+
 
 // === UPLOAD PRODUCT ===
 app.post("/upload/products", upload.single("productImg"), async (req, res) => {
@@ -135,8 +152,10 @@ app.get("/get/products", async (req, res) => {
     const limit = parseInt(req.query.limit) || 10;
     const skip = (page - 1) * limit;
 
-    const products = await ProductSchema.find().skip(skip).limit(limit);
-    const total = await ProductSchema.countDocuments();
+    const query = { productQuantity: { $gt: 0 } }; // Only available products
+
+    const products = await ProductSchema.find(query).skip(skip).limit(limit);
+    const total = await ProductSchema.countDocuments(query);
 
     res.json({
       page,
@@ -164,6 +183,7 @@ app.get("/product_search", async (req, res) => {
 
     const skip = (page - 1) * limit;
     const query = {
+      productQuantity: { $gt: 0 }, // Only available products
       $or: [
         { productName: { $regex: new RegExp(search, "i") } },
         { productCategory: { $regex: new RegExp(search, "i") } },
@@ -185,7 +205,6 @@ app.get("/product_search", async (req, res) => {
     res.status(500).json({ message: "Failed to fetch products", error });
   }
 });
-
 // === GET PRODUCT BY ID ===
 app.get("/get/product/:id", async (req, res) => {
   try {
@@ -247,6 +266,164 @@ app.get("/comments/:productId", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ message: "Failed to fetch comments", error: err });
+  }
+});
+
+app.post("/checkout", async (req, res) => {
+  try {
+    const { cartItems, userEmail } = req.body;
+
+    if (!cartItems || cartItems.length === 0) {
+      return res.status(400).json({ message: "Cart is empty" });
+    }
+
+    let totalPrice = 0;
+    const orderItems = [];
+
+    for (const item of cartItems) {
+      const product = await ProductSchema.findById(item._id);
+      if (!product)
+        return res.status(404).json({ message: "Product not found" });
+
+      if (item.quantity > product.productQuantity) {
+        return res
+          .status(400)
+          .json({ message: `Insufficient stock for ${product.productName}` });
+      }
+
+      totalPrice += product.productPrice * item.quantity;
+
+      orderItems.push({
+        productId: product._id,
+        quantity: item.quantity,
+        price: product.productPrice,
+      });
+
+      product.productQuantity -= item.quantity;
+      await product.save();
+    }
+
+    const order = new OrderSchema({
+      email: userEmail,
+      items: orderItems,
+      totalPrice,
+      status: "pending",
+      createdAt: new Date(),
+    });
+
+    await order.save();
+
+    res.json({ message: "Order placed successfully" });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: error.message });
+  }
+});
+
+// === CREATE BLOG ===
+app.post("/api/blogs", async (req, res) => {
+  const { title, author, fullDesc, thumbnail } = req.body;
+  try {
+    const newBlog = new Blog({ title, author, fullDesc, thumbnail });
+    await newBlog.save();
+    res.status(201).json(newBlog);
+  } catch (error) {
+    res.status(500).json({ message: "Failed to create blog", error });
+  }
+});
+// === GET ALL BLOGS ===
+app.get("/api/blogs", async (req, res) => {
+  try {
+    // Get the limit from query parameters (default is to fetch all blogs if no limit is specified)
+    const limit = parseInt(req.query.limit) || 0; // 0 means no limit, i.e. fetch all blogs
+
+    // If a limit is provided, apply the limit to the query, else fetch all blogs
+    const blogs =
+      limit > 0
+        ? await Blog.find().limit(limit) // Apply limit
+        : await Blog.find(); // No limit, fetch all
+
+    res.status(200).json(blogs);
+  } catch (error) {
+    console.error("Error fetching blogs:", error.message);
+    res
+      .status(500)
+      .json({ message: "Failed to fetch blogs", error: error.message });
+  }
+});
+
+// Route to handle "like" vote
+app.post("/api/blogs/:id/vote/like", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const blog = await Blog.findById(id);
+
+    if (!blog) {
+      return res.status(404).json({ message: "Blog not found" });
+    }
+
+    if (blog.userVote === "like") {
+      blog.likes -= 1;
+      blog.userVote = null;
+    } else {
+      blog.likes += 1;
+      if (blog.userVote === "dislike") {
+        blog.dislikes -= 1;
+      }
+      blog.userVote = "like";
+    }
+
+    await blog.save();
+    res.status(200).json(blog);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to vote", error: error.message });
+  }
+});
+
+// Route to handle "dislike" vote
+app.post("/api/blogs/:id/vote/dislike", async (req, res) => {
+  const { id } = req.params;
+
+  try {
+    const blog = await Blog.findById(id);
+
+    if (!blog) {
+      return res.status(404).json({ message: "Blog not found" });
+    }
+
+    if (blog.userVote === "dislike") {
+      blog.dislikes -= 1;
+      blog.userVote = null;
+    } else {
+      blog.dislikes += 1;
+      if (blog.userVote === "like") {
+        blog.likes -= 1;
+      }
+      blog.userVote = "dislike";
+    }
+
+    await blog.save();
+    res.status(200).json(blog);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to vote", error: error.message });
+  }
+});
+
+// GET logged-in user data
+app.get("/api/user/:email", async (req, res) => {
+  try {
+    const { email } = req.params;
+
+    const user = await UserSchema.findOne({ email: email.toLowerCase() });
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    res.json(user);
+  } catch (error) {
+    console.error("Error fetching user:", error);
+    res.status(500).json({ message: "Server error", error });
   }
 });
 
