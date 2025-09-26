@@ -18,7 +18,7 @@ const app = express();
 // Middleware
 app.use(
   cors({
-    origin: ["http://localhost:5173", "http://192.168.1.25:5173"],
+    origin: "*", // adjust as needed
     credentials: true,
   })
 );
@@ -37,7 +37,7 @@ mongoose
   .then(() => console.log("✅ MongoDB Connected"))
   .catch((err) => console.error("❌ MongoDB Connection Error:", err));
 
-// Ensure upload folder exists
+// Ensure uploads directory exists
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) {
   fs.mkdirSync(uploadDir);
@@ -54,19 +54,50 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ storage });
 
+// ROUTES
 app.get("/", (req, res) => {
   res.send("API is running...");
 });
 
-app.post("/user_verification", (req, res) => {
-  res.send("API is running...");
+// === USER VERIFICATION ===
+app.post("/user_verification", async (req, res) => {
+  const { email } = req.body;
+  if (!email) return res.status(400).json({ message: "Email is required" });
+
+  try {
+    const existingUser = await UserSchema.findOne({ email: email.toLowerCase() });
+    if (existingUser) return res.json({ exists: true, user: existingUser });
+    return res.json({ exists: false });
+  } catch (error) {
+    console.error("Error verifying user:", error);
+    res.status(500).json({ message: "Server error", error });
+  }
 });
 
-// POST: Add new product
+// === CREATE USER ===
+app.post("/create_user", async (req, res) => {
+  const { name, email, role } = req.body;
+  if (!name || !email || !role) {
+    return res.status(400).json({ message: "Name, email, and role are required" });
+  }
+
+  try {
+    const existingUser = await UserSchema.findOne({ email: email.toLowerCase() });
+    if (existingUser) return res.status(409).json({ message: "User already exists", user: existingUser });
+
+    const newUser = new UserSchema({ name, email: email.toLowerCase(), role });
+    await newUser.save();
+
+    res.status(201).json({ message: "User created successfully", user: newUser });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to create user", error });
+  }
+});
+
+// === UPLOAD PRODUCT ===
 app.post("/upload/products", upload.single("productImg"), async (req, res) => {
   try {
-    console.log("Received product data:", req.body);
-
     let imageUrl = "";
 
     if (req.file) {
@@ -97,20 +128,14 @@ app.post("/upload/products", upload.single("productImg"), async (req, res) => {
   }
 });
 
-// GET: All products
+// === GET PRODUCTS ===
 app.get("/get/products", async (req, res) => {
   try {
-    // Query params from frontend (default: page=1, limit=10)
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
-
-    // Calculate skip
     const skip = (page - 1) * limit;
 
-    // Fetch products with skip + limit
     const products = await ProductSchema.find().skip(skip).limit(limit);
-
-    // Count total documents
     const total = await ProductSchema.countDocuments();
 
     res.json({
@@ -126,10 +151,10 @@ app.get("/get/products", async (req, res) => {
   }
 });
 
-// GET Product by Name & category
+// === SEARCH PRODUCT ===
 app.get("/product_search", async (req, res) => {
   try {
-    const search = req.query.name; // can be product name or category
+    const search = req.query.name;
     const page = parseInt(req.query.page) || 1;
     const limit = parseInt(req.query.limit) || 10;
 
@@ -138,8 +163,6 @@ app.get("/product_search", async (req, res) => {
     }
 
     const skip = (page - 1) * limit;
-
-    // Case-insensitive search by productName OR category
     const query = {
       $or: [
         { productName: { $regex: new RegExp(search, "i") } },
@@ -148,7 +171,6 @@ app.get("/product_search", async (req, res) => {
     };
 
     const products = await ProductSchema.find(query).skip(skip).limit(limit);
-
     const total = await ProductSchema.countDocuments(query);
 
     res.json({
@@ -164,9 +186,9 @@ app.get("/product_search", async (req, res) => {
   }
 });
 
+// === GET PRODUCT BY ID ===
 app.get("/get/product/:id", async (req, res) => {
   try {
-    console.log("product by id");
     const { id } = req.params;
     const product = await ProductSchema.findById(id);
 
@@ -181,24 +203,21 @@ app.get("/get/product/:id", async (req, res) => {
   }
 });
 
+// === COMMENTS ===
 app.post("/comments", async (req, res) => {
   const { productId, user, comment } = req.body;
-
   if (!productId || !user || !comment) {
     return res.status(400).json({ message: "All fields are required" });
   }
 
   try {
     let commentsDoc = await CommentsSchema.findOne({ productId });
-
     if (!commentsDoc) {
-      // Create new comments document for product
       commentsDoc = new CommentsSchema({
         productId,
         comments: [{ user, comment }],
       });
     } else {
-      // Add new comment to existing document
       commentsDoc.comments.push({ user, comment });
     }
 
@@ -210,18 +229,14 @@ app.post("/comments", async (req, res) => {
   }
 });
 
-// GET: Fetch comments for a product
 app.get("/comments/:productId", async (req, res) => {
   const { productId } = req.params;
   const limit = parseInt(req.query.limit) || 5;
 
   try {
-    const commentsDoc = await CommentsSchema.findOne({ productId })
-      .populate("productId")
-      .lean();
-
+    const commentsDoc = await CommentsSchema.findOne({ productId }).lean();
     if (!commentsDoc) {
-      return res.json({ productId, comments: [] }); // Return empty array
+      return res.json({ productId, comments: [] });
     }
 
     commentsDoc.comments = commentsDoc.comments
@@ -235,54 +250,6 @@ app.get("/comments/:productId", async (req, res) => {
   }
 });
 
-app.post("/user_verification", async (req, res) => {
-  const { email } = req.body;
-
-  if (!email) {
-    return res.status(400).json({ message: "Email is required" });
-  }
-
-  try {
-    const existingUser = await UserSchema.findOne({ email });
-
-    if (existingUser) {
-      return res.json({ exists: true, user: existingUser });
-    } else {
-      return res.json({ exists: false });
-    }
-  } catch (error) {
-    console.error("Error verifying user:", error);
-    res.status(500).json({ message: "Server error", error });
-  }
-});
-
-app.post("/create_user", async (req, res) => {
-  const { name, email, role } = req.body;
-
-  if (!name || !email || !role) {
-    return res
-      .status(400)
-      .json({ message: "Name, email, and role are required" });
-  }
-
-  try {
-    // Check if user already exists by email
-    const existingUser = await UserSchema.findOne({ email: email.toLowerCase() });
-    if (existingUser) {
-      return res.status(409).json({ message: "User already exists", user: existingUser });
-    }
-
-    // Create new user
-    const newUser = new UserSchema({ name, email: email.toLowerCase(), role });
-    await newUser.save();
-
-    res.status(201).json({ message: "User created successfully", user: newUser });
-  } catch (error) {
-    console.error(error);
-    res.status(500).json({ message: "Failed to create user", error });
-  }
-});
-
-
+// START SERVER
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
