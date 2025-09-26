@@ -4,16 +4,24 @@ import cors from "cors";
 import dotenv from "dotenv";
 import multer from "multer";
 import { v2 as cloudinary } from "cloudinary";
-import ProductSchema from "./models/ProductSchema.js";
 import fs from "fs";
 import path from "path";
+
+import ProductSchema from "./models/ProductSchema.js";
+import CommentsSchema from "./models/CommentsSchema.js";
+import UserSchema from "./models/UserSchema.js";
 
 dotenv.config();
 
 const app = express();
 
 // Middleware
-app.use(cors());
+app.use(
+  cors({
+    origin: ["http://localhost:5173", "http://192.168.1.25:5173"],
+    credentials: true,
+  })
+);
 app.use(express.json());
 
 // Cloudinary Config
@@ -139,9 +147,7 @@ app.get("/product_search", async (req, res) => {
       ],
     };
 
-    const products = await ProductSchema.find(query)
-      .skip(skip)
-      .limit(limit);
+    const products = await ProductSchema.find(query).skip(skip).limit(limit);
 
     const total = await ProductSchema.countDocuments(query);
 
@@ -155,6 +161,125 @@ app.get("/product_search", async (req, res) => {
   } catch (error) {
     console.error(error);
     res.status(500).json({ message: "Failed to fetch products", error });
+  }
+});
+
+app.get("/get/product/:id", async (req, res) => {
+  try {
+    console.log("product by id");
+    const { id } = req.params;
+    const product = await ProductSchema.findById(id);
+
+    if (!product) {
+      return res.status(404).json({ message: "Product not found" });
+    }
+
+    res.json(product);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to fetch product", error });
+  }
+});
+
+app.post("/comments", async (req, res) => {
+  const { productId, user, comment } = req.body;
+
+  if (!productId || !user || !comment) {
+    return res.status(400).json({ message: "All fields are required" });
+  }
+
+  try {
+    let commentsDoc = await CommentsSchema.findOne({ productId });
+
+    if (!commentsDoc) {
+      // Create new comments document for product
+      commentsDoc = new CommentsSchema({
+        productId,
+        comments: [{ user, comment }],
+      });
+    } else {
+      // Add new comment to existing document
+      commentsDoc.comments.push({ user, comment });
+    }
+
+    await commentsDoc.save();
+    res.status(201).json({ message: "Comment added!", comments: commentsDoc });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to add comment", error: err });
+  }
+});
+
+// GET: Fetch comments for a product
+app.get("/comments/:productId", async (req, res) => {
+  const { productId } = req.params;
+  const limit = parseInt(req.query.limit) || 5;
+
+  try {
+    const commentsDoc = await CommentsSchema.findOne({ productId })
+      .populate("productId")
+      .lean();
+
+    if (!commentsDoc) {
+      return res.json({ productId, comments: [] }); // Return empty array
+    }
+
+    commentsDoc.comments = commentsDoc.comments
+      .sort((a, b) => new Date(b.date) - new Date(a.date))
+      .slice(0, limit);
+
+    res.json(commentsDoc);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ message: "Failed to fetch comments", error: err });
+  }
+});
+
+app.post("/user_verification", async (req, res) => {
+  const { email } = req.body;
+
+  if (!email) {
+    return res.status(400).json({ message: "Email is required" });
+  }
+
+  try {
+    const existingUser = await UserSchema.findOne({ email });
+
+    if (existingUser) {
+      return res.json({ exists: true, user: existingUser });
+    } else {
+      return res.json({ exists: false });
+    }
+  } catch (error) {
+    console.error("Error verifying user:", error);
+    res.status(500).json({ message: "Server error", error });
+  }
+});
+
+app.post("/create_user", async (req, res) => {
+  const { name, email, role } = req.body;
+
+  if (!name || !email || !role) {
+    return res
+      .status(400)
+      .json({ message: "Name, email, and role are required" });
+  }
+
+  try {
+    // Check if user already exists by email
+    const existingUser = await UserSchema.findOne({ email: email.toLowerCase() });
+    if (existingUser) {
+      return res.status(409).json({ message: "User already exists", user: existingUser });
+    }
+
+    // Create new user
+    const newUser = new UserSchema({ name, email: email.toLowerCase(), role });
+    await newUser.save();
+
+    res.status(201).json({ message: "User created successfully", user: newUser });
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ message: "Failed to create user", error });
   }
 });
 
